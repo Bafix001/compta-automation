@@ -13,6 +13,7 @@ from clorian import clorian
 from stripe import st
 from shopify import shopify
 from skidata import treat_skidata_file
+from email_sender import EmailSender  # Import de la classe EmailSender
 from dotenv import load_dotenv
 
 
@@ -53,6 +54,10 @@ class UsrRequest:
                           nargs='*', help="Répertoires distants SFTP à traiter")
         parser.add_argument("-o", "--output", default=os.getenv('OUTPUT_FILE', 'output.csv'), 
                           help="Fichier de sortie CSV")
+        parser.add_argument("--send-email", action='store_true', default=True,
+                          help="Envoyer le rapport par email à la fin du traitement")
+        parser.add_argument("--no-email", action='store_false', dest='send_email',
+                          help="Désactiver l'envoi du rapport par email")
 
         self.args = parser.parse_args()
         self._setup_regex()
@@ -379,6 +384,21 @@ class UsrRequest:
         
         logger.info("="*80 + "\n")
 
+    def get_email_stats(self):
+        """
+        Prépare les statistiques pour l'envoi par email.
+        
+        Returns:
+            Dictionnaire formaté pour l'email
+        """
+        return {
+            'total_lines': self.stats['total_lines'],
+            'shopify': self.stats['shopify']['lines'],
+            'stripe': self.stats['stripe']['lines'],
+            'clorian': self.stats['clorian']['lines'],
+            'skidata': self.stats['skidata']['lines']
+        }
+
     def close_sftp(self):
         """Ferme la connexion SFTP proprement."""
         try:
@@ -405,6 +425,7 @@ def main():
     logger.info("="*80 + "\n")
     
     request = None
+    email_sent = False
     
     try:
         request = UsrRequest()
@@ -437,6 +458,31 @@ def main():
         # Traitement des fichiers
         request.process_files()
         
+        # Envoi de l'email si demandé et si des données ont été traitées
+        if request.args.send_email and request.stats['total_lines'] > 0:
+            logger.info("\n" + "="*80)
+            logger.info("📧 ENVOI DU RAPPORT PAR EMAIL")
+            logger.info("="*80)
+            
+            try:
+                email_sender = EmailSender()
+                stats_for_email = request.get_email_stats()
+                
+                if email_sender.send_report(request.args.output, stats_for_email):
+                    email_sent = True
+                    logger.info("✅ Rapport envoyé par email avec succès")
+                else:
+                    logger.warning("⚠️  L'email n'a pas pu être envoyé")
+                    
+            except ValueError as e:
+                logger.error(f"❌ Configuration email invalide: {e}")
+            except Exception as e:
+                logger.error(f"❌ Erreur lors de l'envoi de l'email: {e}")
+            
+            logger.info("="*80 + "\n")
+        elif request.args.send_email and request.stats['total_lines'] == 0:
+            logger.info("\n⚠️  Aucune donnée à envoyer par email")
+        
         # Calcul du temps d'exécution
         end_time = datetime.now()
         duration = end_time - start_time
@@ -446,6 +492,8 @@ def main():
         logger.info("="*80)
         logger.info(f"Heure de fin: {end_time.strftime('%d/%m/%Y %H:%M:%S')}")
         logger.info(f"Durée totale: {duration.total_seconds():.2f} secondes")
+        if email_sent:
+            logger.info(f"📧 Email envoyé: Oui")
         logger.info("="*80 + "\n")
         
     except KeyboardInterrupt:
